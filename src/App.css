@@ -364,9 +364,11 @@ html, body, #root {
   box-shadow: none !important;
 }
 
-/* When an edge is selected, disable all node interactions so
-   reconnect handles (in EdgeLabelRenderer) aren't obstructed */
-.wf-canvas--edge-active .react-flow__node {
+/* Edge editing mode: when an edge is selected, lock out ALL nodes so
+   reconnect handles (in SVG layer) aren't blocked by the node DOM layer.
+   User must click canvas to deselect edge before interacting with nodes. */
+.wf-canvas--edge-mode .react-flow__node,
+.wf-canvas--edge-mode .react-flow__node * {
   pointer-events: none !important;
 }
 
@@ -579,7 +581,7 @@ html, body, #root {
 /* ===== NODES — White outline, outline icon in front ===== */
 .wf-node {
   position: relative;
-  border: 2px solid var(--border-primary);
+  border: var(--stroke-thickness, 2px) solid var(--border-primary);
   border-radius: 12px;
   width: 256px; /* 16 grid units — standard node width */
   background: transparent;
@@ -794,7 +796,7 @@ html, body, #root {
 
 /* ===== GROUP / ZONE NODES ===== */
 .wf-group {
-  border: 2px dashed;
+  border: var(--stroke-thickness, 2px) dashed;
   border-radius: 12px;
   position: relative;
   pointer-events: none;
@@ -907,20 +909,13 @@ html, body, #root {
   background: var(--node-color, var(--border-primary)) !important;
 }
 
-/* Hide node handles when this node is an endpoint of the selected edge,
-   so the edge's reconnect handles are easy to grab */
-.wf-node--hide-handles .wf-handle {
-  opacity: 0 !important;
+/* When this node is an endpoint of the selected edge, disable the entire
+   node so clicks fall through to the SVG reconnect handles underneath */
+.wf-node--edge-endpoint {
   pointer-events: none !important;
 }
-
-/* Reconnect handles on selected edges */
-.wf-reconnect-handle {
-  transition: transform 0.1s;
-}
-.wf-reconnect-handle:hover {
-  transform: translate(-50%, -50%) scale(1.4) !important;
-  filter: brightness(1.2);
+.wf-node--edge-endpoint .wf-handle {
+  opacity: 0 !important;
 }
 
 /* Swap direction button on selected edge */

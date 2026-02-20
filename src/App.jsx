@@ -36,7 +36,7 @@ export default function App() {
   };
 
   if (!token) {
-    return <Login onLogin={handleLogin} />;
+    return <Login onLogin={handleLogin} onSkip={() => setToken('guest')} />;
   }
 
   return <WorkflowEditor />;

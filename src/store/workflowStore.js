@@ -41,6 +41,7 @@ const useWorkflowStore = create((set, get) => ({
   sidebarOpen: true,
   propertiesPanelOpen: false,
   isDirty: false,
+  globalThickness: 2, // Shared thickness for edges AND node outlines
 
   // Auth actions
   setUser: (user) => set({ user }),
@@ -70,15 +71,20 @@ const useWorkflowStore = create((set, get) => ({
   },
 
   // Workflow actions
-  setWorkflow: ({ id, name, nodes, edges }) =>
+  setWorkflow: ({ id, name, nodes, edges }) => {
+    // Infer global thickness from first edge (all edges share the same thickness)
+    const loadedEdges = edges || [];
+    const thickness = loadedEdges.length > 0 ? (loadedEdges[0].data?.thickness || 2) : 2;
     set({
       workflowId: id,
       workflowName: name || 'Untitled Workflow',
       nodes: nodes || [],
-      edges: edges || [],
+      edges: loadedEdges,
+      globalThickness: thickness,
       isDirty: false,
       _openDescs: {},
-    }),
+    });
+  },
 
   setWorkflowName: (name) => set({ workflowName: name, isDirty: true }),
 
@@ -175,6 +181,8 @@ const useWorkflowStore = create((set, get) => ({
   },
 
   reconnectEdgeTo: (edgeId, updates) => {
+    const oldEdge = get().edges.find((e) => e.id === edgeId);
+    console.log(`[store] reconnectEdgeTo: edge=${edgeId} found=${!!oldEdge} old=${oldEdge?.source}->${oldEdge?.target} new=${updates.source ?? oldEdge?.source}->${updates.target ?? oldEdge?.target} handles=${updates.sourceHandle ?? oldEdge?.sourceHandle}->${updates.targetHandle ?? oldEdge?.targetHandle}`);
     set({
       edges: get().edges.map((e) =>
         e.id === edgeId
@@ -184,7 +192,7 @@ const useWorkflowStore = create((set, get) => ({
               sourceHandle: updates.sourceHandle ?? e.sourceHandle,
               target: updates.target ?? e.target,
               targetHandle: updates.targetHandle ?? e.targetHandle,
-              data: { ...e.data, segmentAdjustments: undefined },
+              data: { ...e.data, segmentAdjustments: undefined, manualHandles: true },
             }
           : e
       ),
@@ -405,13 +413,18 @@ const useWorkflowStore = create((set, get) => ({
   },
 
   setAllEdgesData: (dataUpdate) => {
-    set({
+    const update = {
       edges: get().edges.map((e) => ({
         ...e,
         data: { ...e.data, ...dataUpdate },
       })),
       isDirty: true,
-    });
+    };
+    // Sync global thickness (controls both edges and node outlines)
+    if (dataUpdate.thickness != null) {
+      update.globalThickness = dataUpdate.thickness;
+    }
+    set(update);
   },
 
   deleteEdge: (edgeId) => {

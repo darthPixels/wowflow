@@ -4,7 +4,7 @@ import ThemeToggle from './ThemeToggle';
 
 const API_URL = '/api';
 
-export default function Login({ onLogin }) {
+export default function Login({ onLogin, onSkip }) {
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -91,6 +91,15 @@ export default function Login({ onLogin }) {
           >
             {isRegister ? 'Already have an account? Log in' : 'Need an account? Register'}
           </button>
+          {onSkip && (
+            <button
+              className="wf-btn wf-btn--ghost"
+              onClick={onSkip}
+              style={{ marginTop: 4 }}
+            >
+              Continue without account
+            </button>
+          )}
         </div>
 
         <div className="wf-login__theme">

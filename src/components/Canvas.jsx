@@ -74,6 +74,7 @@ export default function Canvas() {
     clearSelection,
     selectedEdge,
     theme,
+    globalThickness,
   } = useWorkflowStore();
 
   const onDragOver = useCallback((event) => {
@@ -162,7 +163,7 @@ export default function Canvas() {
   };
 
   return (
-    <div className={`wf-canvas ${selectedEdge ? 'wf-canvas--edge-active' : ''}`} ref={reactFlowWrapper}>
+    <div className={`wf-canvas ${selectedEdge ? 'wf-canvas--edge-mode' : ''}`} ref={reactFlowWrapper} style={{ '--stroke-thickness': `${globalThickness}px` }}>
       <ReactFlow
         nodes={nodes}
         edges={styledEdges}

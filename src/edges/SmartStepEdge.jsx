@@ -29,7 +29,7 @@ export default function SmartStepEdge({
   data,
 }) {
   const allNodes = useNodes();
-  const { getViewport, getInternalNode, screenToFlowPosition } = useReactFlow();
+  const { getViewport, getInternalNode, screenToFlowPosition, setViewport } = useReactFlow();
   const updateEdgeData = useWorkflowStore((s) => s.updateEdgeData);
   const reconnectEdgeTo = useWorkflowStore((s) => s.reconnectEdgeTo);
   const swapEdgeDirection = useWorkflowStore((s) => s.swapEdgeDirection);
@@ -40,6 +40,9 @@ export default function SmartStepEdge({
   const dataRef = useRef(data);
   dataRef.current = data;
   const dragHandlesRef = useRef([]);
+  const panVelocityRef = useRef({ dx: 0, dy: 0 });
+  const panIntervalRef = useRef(null);
+  const lastScreenPosRef = useRef({ x: 0, y: 0 });
 
   // ── Helper: get absolute position for any node ──
   const getAbsPos = useCallback((nodeId, fallbackPos) => {
@@ -54,11 +57,14 @@ export default function SmartStepEdge({
 
     let sx, sy, sPos, tx, ty, tPos;
 
-    if (srcNode && tgtNode) {
+    if (srcNode && tgtNode && !data?.manualHandles) {
+      // Auto mode: compute best handle pair based on node geometry
       const auto = computeAutoHandles(srcNode, tgtNode, allNodes, getAbsPos);
       sx = auto.sx; sy = auto.sy; sPos = auto.sPos;
       tx = auto.tx; ty = auto.ty; tPos = auto.tPos;
     } else {
+      // Manual mode (reconnected edge) or fallback: use React Flow positions
+      // which respect the stored sourceHandle/targetHandle
       sx = rfSourceX; sy = rfSourceY; sPos = rfSourcePos;
       tx = rfTargetX; ty = rfTargetY; tPos = rfTargetPos;
     }
@@ -96,7 +102,7 @@ export default function SmartStepEdge({
     return computeSmartPath(sx, sy, tx, ty, sPos, tPos, boxes);
   }, [
     source, target, rfSourceX, rfSourceY, rfTargetX, rfTargetY,
-    rfSourcePos, rfTargetPos, getAbsPos,
+    rfSourcePos, rfTargetPos, getAbsPos, data?.manualHandles,
     allNodes.map((n) =>
       `${n.id}:${Math.round(n.position.x)}:${Math.round(n.position.y)}:${n.measured?.width || 0}:${n.measured?.height || 0}:${n.style?.width || 0}:${n.style?.height || 0}`
     ).join('|'),
@@ -164,21 +170,25 @@ export default function SmartStepEdge({
     const startY = e.clientY;
 
     const onPointerMove = (moveEvt) => {
-      const zoom = getViewport().zoom || 1;
+      const rfZoom = getViewport().zoom || 1;
+      const cssZoom = parseFloat(document.documentElement.style.zoom) || 1;
+      const totalZoom = rfZoom * cssZoom;
       if (direction === 'horizontal') {
-        setActiveDrag({ segIdx, offset: (moveEvt.clientY - startY) / zoom });
+        setActiveDrag({ segIdx, offset: (moveEvt.clientY - startY) / totalZoom });
       } else {
-        setActiveDrag({ segIdx, offset: (moveEvt.clientX - startX) / zoom });
+        setActiveDrag({ segIdx, offset: (moveEvt.clientX - startX) / totalZoom });
       }
     };
 
     const onPointerUp = (upEvt) => {
       document.removeEventListener('pointermove', onPointerMove);
       document.removeEventListener('pointerup', onPointerUp);
-      const zoom = getViewport().zoom || 1;
+      const rfZoom = getViewport().zoom || 1;
+      const cssZoom = parseFloat(document.documentElement.style.zoom) || 1;
+      const totalZoom = rfZoom * cssZoom;
       const offset = direction === 'horizontal'
-        ? (upEvt.clientY - startY) / zoom
-        : (upEvt.clientX - startX) / zoom;
+        ? (upEvt.clientY - startY) / totalZoom
+        : (upEvt.clientX - startX) / totalZoom;
 
       if (Math.abs(offset) > 1) {
         const currentData = dataRef.current;
@@ -195,93 +205,147 @@ export default function SmartStepEdge({
     document.addEventListener('pointerup', onPointerUp);
   }, [id, getViewport, updateEdgeData]);
 
-  // ── Reconnect: drag endpoint to a connector, 5 screen-px snap ──
-  // Uses delta-based coordinates (like segment drag) to avoid CSS zoom offset issues.
-  const SNAP_SCREEN_PX = 5;
+  // ── Reconnect: drag endpoint to a connector ──
+  // Uses screenToFlowPosition for robust cursor tracking (handles CSS zoom, viewport offsets, etc.)
+  // Handle positions use React Flow's internal handleBounds for exact DOM positions.
+  const SNAP_SCREEN_PX = 80;
   const lastSnapRef = useRef(null);
 
   const handleReconnectStart = useCallback((e, type) => {
     e.stopPropagation();
     e.preventDefault();
 
-    // Compute handle positions for all eligible nodes once at drag start
-    const handles = allNodes
-      .filter((n) => n.type !== 'groupNode' && !n.data?._hiddenInZone)
-      .flatMap((n) => {
-        const absPos = getAbsPos(n.id, n.position);
-        const isCollapsed = n.data?.collapsed || false;
-        const w = n.measured?.width || DEFAULT_W;
-        const h = n.measured?.height || DEFAULT_H;
-        const labelOff = isCollapsed ? 0 : LABEL_OFFSET;
-        return [
-          { nodeId: n.id, pos: 'top', x: absPos.x + w / 2, y: absPos.y + labelOff },
-          { nodeId: n.id, pos: 'bottom', x: absPos.x + w / 2, y: absPos.y + h },
-          { nodeId: n.id, pos: 'left', x: absPos.x, y: absPos.y + (h + labelOff) / 2 },
-          { nodeId: n.id, pos: 'right', x: absPos.x + w, y: absPos.y + (h + labelOff) / 2 },
-        ];
-      })
-      .filter((h) => {
-        const fixedNodeId = type === 'source' ? target : source;
-        return h.nodeId !== fixedNodeId;
-      });
-    dragHandlesRef.current = handles;
+    // Determine which specific handle to exclude (the one being dragged away from)
+    const excludeNodeId = type === 'source' ? source : target;
+    let excludeHandlePos;
+    if (dataRef.current?.manualHandles) {
+      // Manual handles mode: the RF-provided position tells us which handle is active
+      excludeHandlePos = type === 'source' ? rfSourcePos : rfTargetPos;
+    } else {
+      // Auto mode: compute to find which handle was auto-selected
+      const srcNode = allNodes.find((n) => n.id === source);
+      const tgtNode = allNodes.find((n) => n.id === target);
+      if (srcNode && tgtNode) {
+        const auto = computeAutoHandles(srcNode, tgtNode, allNodes, getAbsPos);
+        excludeHandlePos = type === 'source' ? auto.sPos : auto.tPos;
+      }
+    }
 
-    // Record starting position — delta approach avoids CSS zoom issues
-    const startCX = e.clientX;
-    const startCY = e.clientY;
-    const startFlowX = type === 'source' ? waypoints[0][0] : waypoints[waypoints.length - 1][0];
-    const startFlowY = type === 'source' ? waypoints[0][1] : waypoints[waypoints.length - 1][1];
+    // Build handle positions from ALL nodes — only exclude the exact handle being dragged from
+    const handles = [];
+    for (const n of allNodes) {
+      if (n.type === 'groupNode' || n.data?._hiddenInZone) continue;
+      const internal = getInternalNode(n.id);
+      if (!internal) continue;
+      const absPos = internal.internals.positionAbsolute;
+      const hb = internal.internals.handleBounds;
+      if (!hb) continue;
+      const allH = [...(hb.source || []), ...(hb.target || [])];
+      const seen = new Set();
+      for (const h of allH) {
+        const key = h.id || h.position;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // Skip only the exact handle being dragged from
+        if (n.id === excludeNodeId && key === excludeHandlePos) continue;
+        handles.push({
+          nodeId: n.id,
+          pos: key,
+          x: absPos.x + h.x + (h.width || 0) / 2,
+          y: absPos.y + h.y + (h.height || 0) / 2,
+        });
+      }
+    }
+    dragHandlesRef.current = handles;
     lastSnapRef.current = null;
 
     const getCursorFlow = (cx, cy) => {
-      const zoom = getViewport().zoom || 1;
-      return {
-        x: startFlowX + (cx - startCX) / zoom,
-        y: startFlowY + (cy - startCY) / zoom,
-      };
+      const cssZoom = parseFloat(document.documentElement.style.zoom) || 1;
+      return screenToFlowPosition({ x: cx / cssZoom, y: cy / cssZoom });
     };
 
     const findSnap = (cursorX, cursorY) => {
-      const zoom = getViewport().zoom || 1;
-      const snapRadius = SNAP_SCREEN_PX / zoom;
+      const rfZoom = getViewport().zoom || 1;
+      const cssZoom = parseFloat(document.documentElement.style.zoom) || 1;
+      const snapRadius = SNAP_SCREEN_PX / (rfZoom * cssZoom);
       let snapHandle = null;
       let minDist = Infinity;
       for (const handle of dragHandlesRef.current) {
         const dist = Math.hypot(handle.x - cursorX, handle.y - cursorY);
-        if (dist < snapRadius && dist < minDist) {
+        if (dist < minDist) {
           minDist = dist;
-          snapHandle = handle;
+          if (dist < snapRadius) snapHandle = handle;
         }
       }
       return snapHandle;
     };
 
+    // Auto-pan: when cursor is near container edges, continuously pan the viewport
+    const PAN_MARGIN = 60;
+    const PAN_SPEED = 12;
+    const updateAutoPan = (clientX, clientY) => {
+      const container = document.querySelector('.react-flow');
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      let dx = 0, dy = 0;
+      if (clientX - rect.left < PAN_MARGIN) dx = PAN_SPEED;
+      else if (rect.right - clientX < PAN_MARGIN) dx = -PAN_SPEED;
+      if (clientY - rect.top < PAN_MARGIN) dy = PAN_SPEED;
+      else if (rect.bottom - clientY < PAN_MARGIN) dy = -PAN_SPEED;
+      panVelocityRef.current = { dx, dy };
+      if ((dx || dy) && !panIntervalRef.current) {
+        panIntervalRef.current = setInterval(() => {
+          const { dx: pdx, dy: pdy } = panVelocityRef.current;
+          if (!pdx && !pdy) return;
+          const vp = getViewport();
+          setViewport({ x: vp.x + pdx, y: vp.y + pdy, zoom: vp.zoom });
+          // Re-compute snap with updated viewport (cursor hasn't moved but canvas has)
+          const { x: sx, y: sy } = lastScreenPosRef.current;
+          const cursor = getCursorFlow(sx, sy);
+          const snapHandle = findSnap(cursor.x, cursor.y);
+          lastSnapRef.current = snapHandle;
+          setReconnectDrag((prev) => prev ? { ...prev, cursorX: cursor.x, cursorY: cursor.y, snapHandle } : null);
+        }, 30);
+      } else if (!dx && !dy && panIntervalRef.current) {
+        clearInterval(panIntervalRef.current);
+        panIntervalRef.current = null;
+      }
+    };
+
     const onPointerMove = (moveEvt) => {
+      lastScreenPosRef.current = { x: moveEvt.clientX, y: moveEvt.clientY };
       const cursor = getCursorFlow(moveEvt.clientX, moveEvt.clientY);
       const snapHandle = findSnap(cursor.x, cursor.y);
       lastSnapRef.current = snapHandle;
       setReconnectDrag({ type, cursorX: cursor.x, cursorY: cursor.y, snapHandle });
+      updateAutoPan(moveEvt.clientX, moveEvt.clientY);
     };
 
-    const onPointerUp = () => {
+    const onPointerUp = (upEvt) => {
       document.removeEventListener('pointermove', onPointerMove);
       document.removeEventListener('pointerup', onPointerUp);
-
-      // Use the last known snap — avoids missing the snap on release
-      const snap = lastSnapRef.current;
+      // Stop auto-pan
+      if (panIntervalRef.current) {
+        clearInterval(panIntervalRef.current);
+        panIntervalRef.current = null;
+      }
+      const cursor = getCursorFlow(upEvt.clientX, upEvt.clientY);
+      const snapAtRelease = findSnap(cursor.x, cursor.y);
+      const snap = snapAtRelease || lastSnapRef.current;
+      console.log(`[reconnect] release: edgeId=${id} type=${type} snapped=${!!snap} snapNode=${snap?.nodeId} snapPos=${snap?.pos}`);
       if (snap) {
-        if (type === 'source') {
-          reconnectEdgeTo(id, { source: snap.nodeId, sourceHandle: snap.pos });
-        } else {
-          reconnectEdgeTo(id, { target: snap.nodeId, targetHandle: snap.pos });
-        }
+        const updates = type === 'source'
+          ? { source: snap.nodeId, sourceHandle: snap.pos }
+          : { target: snap.nodeId, targetHandle: snap.pos };
+        console.log(`[reconnect] RECONNECTING: edge=${id} ${type}=${snap.nodeId}:${snap.pos} (was ${type === 'source' ? source : target})`);
+        reconnectEdgeTo(id, updates);
       }
       setReconnectDrag(null);
     };
 
     document.addEventListener('pointermove', onPointerMove);
     document.addEventListener('pointerup', onPointerUp);
-  }, [id, source, target, waypoints, allNodes, getAbsPos, getViewport, reconnectEdgeTo]);
+  }, [id, source, target, allNodes, getInternalNode, screenToFlowPosition, getViewport, setViewport, reconnectEdgeTo, getAbsPos, rfSourcePos, rfTargetPos]);
 
   const strokeWidth = style?.strokeWidth || 2;
   const edgeColor = selected ? 'var(--edge-selected)' : (style?.stroke || 'var(--edge-color)');
@@ -326,7 +390,7 @@ export default function SmartStepEdge({
           onMouseLeave={() => { if (!activeDrag) setHovered(false); }}
         />
       ))}
-      {/* Reconnect drag preview */}
+      {/* Reconnect drag preview — dashed line + dot + snap ring + debug markers */}
       {reconnectDrag && (() => {
         const fixedEnd = reconnectDrag.type === 'source'
           ? { x: waypoints[waypoints.length - 1][0], y: waypoints[waypoints.length - 1][1] }
@@ -337,6 +401,11 @@ export default function SmartStepEdge({
           : { x: reconnectDrag.cursorX, y: reconnectDrag.cursorY };
         return (
           <>
+            {/* Debug: show all snap target positions as small dots */}
+            {dragHandlesRef.current.map((h, i) => (
+              <circle key={`dbg-${i}`} cx={h.x} cy={h.y} r={4}
+                fill="rgba(255,80,80,0.5)" stroke="none" />
+            ))}
             <line
               x1={fixedEnd.x} y1={fixedEnd.y}
               x2={dragEnd.x} y2={dragEnd.y}
@@ -345,13 +414,16 @@ export default function SmartStepEdge({
               strokeDasharray="6 3"
               fill="none"
             />
-            {/* Dot at drag endpoint — larger when snapped */}
+            {/* Debug: green circle at raw cursor flow position (should follow your mouse exactly) */}
+            <circle
+              cx={reconnectDrag.cursorX} cy={reconnectDrag.cursorY}
+              r={6} fill="rgba(0,255,80,0.7)" stroke="white" strokeWidth={1}
+            />
             <circle
               cx={dragEnd.x} cy={dragEnd.y}
               r={snapped ? 6 : 4}
               fill="var(--accent-blue)"
             />
-            {/* Snapped connector highlight ring */}
             {snapped && (
               <circle
                 cx={snapped.x} cy={snapped.y}
@@ -365,6 +437,44 @@ export default function SmartStepEdge({
           </>
         );
       })()}
+      {/* Reconnect handles as SVG circles — rendered in SVG layer, always on top of paths.
+           Each has an invisible 20px hit area behind the visible 7px dot for easy grabbing. */}
+      {selected && !activeDrag && !reconnectDrag && (
+        <>
+          {/* Source handle */}
+          <circle
+            cx={waypoints[0][0]} cy={waypoints[0][1]}
+            r={20}
+            fill="transparent"
+            style={{ cursor: 'crosshair', pointerEvents: 'all' }}
+            onPointerDown={(e) => handleReconnectStart(e, 'source')}
+          />
+          <circle
+            cx={waypoints[0][0]} cy={waypoints[0][1]}
+            r={7}
+            fill="var(--accent-blue)"
+            stroke="var(--bg-canvas)"
+            strokeWidth={2}
+            style={{ pointerEvents: 'none' }}
+          />
+          {/* Target handle */}
+          <circle
+            cx={waypoints[waypoints.length - 1][0]} cy={waypoints[waypoints.length - 1][1]}
+            r={20}
+            fill="transparent"
+            style={{ cursor: 'crosshair', pointerEvents: 'all' }}
+            onPointerDown={(e) => handleReconnectStart(e, 'target')}
+          />
+          <circle
+            cx={waypoints[waypoints.length - 1][0]} cy={waypoints[waypoints.length - 1][1]}
+            r={7}
+            fill="var(--accent-blue)"
+            stroke="var(--bg-canvas)"
+            strokeWidth={2}
+            style={{ pointerEvents: 'none' }}
+          />
+        </>
+      )}
       <EdgeLabelRenderer>
         {label && (
           <div
@@ -407,62 +517,29 @@ export default function SmartStepEdge({
             onPointerDown={(e) => handlePointerDown(e, seg.segIdx, seg.direction)}
           />
         ))}
-        {/* Reconnect handles at edge start/end — visible when selected */}
+        {/* Swap direction button — only when edge selected, not dragging */}
         {selected && !activeDrag && !reconnectDrag && (
-          <>
-            <div
-              className="wf-reconnect-handle nodrag nopan"
-              style={{
-                position: 'absolute',
-                width: 14, height: 14, borderRadius: '50%',
-                background: 'var(--accent-blue)',
-                border: '2px solid var(--bg-canvas)',
-                cursor: 'crosshair',
-                pointerEvents: 'all',
-                transform: `translate(-50%, -50%) translate(${waypoints[0][0]}px, ${waypoints[0][1]}px)`,
-                zIndex: 20,
-              }}
-              onPointerDown={(e) => handleReconnectStart(e, 'source')}
-              title="Drag to reconnect source"
-            />
-            <div
-              className="wf-reconnect-handle nodrag nopan"
-              style={{
-                position: 'absolute',
-                width: 14, height: 14, borderRadius: '50%',
-                background: 'var(--accent-blue)',
-                border: '2px solid var(--bg-canvas)',
-                cursor: 'crosshair',
-                pointerEvents: 'all',
-                transform: `translate(-50%, -50%) translate(${waypoints[waypoints.length - 1][0]}px, ${waypoints[waypoints.length - 1][1]}px)`,
-                zIndex: 20,
-              }}
-              onPointerDown={(e) => handleReconnectStart(e, 'target')}
-              title="Drag to reconnect target"
-            />
-            {/* Swap direction button */}
-            <div
-              className="nodrag nopan wf-swap-btn"
-              style={{
-                position: 'absolute',
-                transform: `translate(-50%, -50%) translate(${labelPos.x}px, ${labelPos.y + (label ? 16 : 0)}px)`,
-                cursor: 'pointer',
-                pointerEvents: 'all',
-                background: 'var(--bg-node)',
-                border: '1px solid var(--border-primary)',
-                borderRadius: 4,
-                padding: '1px 6px',
-                fontSize: 13,
-                color: 'var(--text-secondary)',
-                zIndex: 20,
-                lineHeight: 1.2,
-              }}
-              onClick={() => swapEdgeDirection(id)}
-              title="Swap direction"
-            >
-              ⇄
-            </div>
-          </>
+          <div
+            className="nodrag nopan wf-swap-btn"
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelPos.x}px, ${labelPos.y + (label ? 16 : 0)}px)`,
+              cursor: 'pointer',
+              pointerEvents: 'all',
+              background: 'var(--bg-node)',
+              border: '1px solid var(--border-primary)',
+              borderRadius: 4,
+              padding: '1px 6px',
+              fontSize: 13,
+              color: 'var(--text-secondary)',
+              zIndex: 20,
+              lineHeight: 1.2,
+            }}
+            onClick={() => swapEdgeDirection(id)}
+            title="Swap direction"
+          >
+            ⇄
+          </div>
         )}
       </EdgeLabelRenderer>
     </>

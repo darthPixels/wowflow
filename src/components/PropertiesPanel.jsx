@@ -154,9 +154,9 @@ function GlobalProperties({ nodes, edges, onSetAllNodes, onSetAllEdges }) {
         </div>
       </div>
 
-      {/* All edges — thickness */}
+      {/* All edges + node outlines — thickness */}
       <div className="wf-properties__field">
-        <label>All Edges — Thickness</label>
+        <label>Stroke Thickness (Edges + Nodes)</label>
         <div className="wf-properties__btn-row">
           {[1, 1.5, 2, 3, 4].map((t) => (
             <button

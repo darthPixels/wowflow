@@ -129,7 +129,7 @@ export default function BaseNode({
   if (collapsed) {
     return (
       <div
-        className={`wf-node wf-node--collapsed ${selected ? 'wf-node--selected' : ''} ${isEdgeEndpoint ? 'wf-node--hide-handles' : ''}`}
+        className={`wf-node wf-node--collapsed ${selected ? 'wf-node--selected' : ''} ${isEdgeEndpoint ? 'wf-node--edge-endpoint' : ''}`}
         style={{ '--node-color': accentColor }}
         title={data.description ? data.description.replace(/<[^>]*>/g, '') : ''}
       >
@@ -166,7 +166,7 @@ export default function BaseNode({
   // ===== FULL NODE =====
   return (
     <div
-      className={`wf-node ${selected ? 'wf-node--selected' : ''} ${isEdgeEndpoint ? 'wf-node--hide-handles' : ''}`}
+      className={`wf-node ${selected ? 'wf-node--selected' : ''} ${isEdgeEndpoint ? 'wf-node--edge-endpoint' : ''}`}
       style={{
         '--node-color': accentColor,
         backgroundColor: fillBg,
