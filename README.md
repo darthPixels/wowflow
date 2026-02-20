@@ -33,7 +33,7 @@ Open `http://localhost:5173` in your browser.
 ### Edges
 - Smart orthogonal routing that avoids crossing through nodes
 - 30px stubs at entry/exit points guarantee clean 90° connections
-- Drag mid-segments to adjust routing manually
+- Drag mid-segments to adjust routing manually; segments snap and collapse when aligned with adjacent parallel segments
 - Select an edge to see reconnect handles (blue dots) at start/end — drag to rewire to any connector, including a different handle on the same node
 - Canvas auto-pans when dragging a reconnect handle near the screen edge
 - Connectors snap within range for easy targeting

@@ -20,8 +20,11 @@ Each segment is checked for intersection with node bounding boxes (padded by 36p
 ### 4. Stub Enforcement (`enforceStubs`)
 Inserts 30px orthogonal stubs at entry and exit points. Stubs at indices 1 and length-2 are protected from `cleanWaypoints` removal, guaranteeing visible 30px straight segments at each handle.
 
-### 4. Segment Dragging
-Mid-segments can be dragged perpendicular to their direction. Adjustments are stored in `edge.data.segmentAdjustments` and reapplied on each render. Uses delta-based coordinates with combined RF + CSS zoom for accuracy.
+### 5. Segment Dragging
+Mid-segments can be dragged perpendicular to their direction. Adjustments are stored in `edge.data.segmentAdjustments` and reapplied on each render. Uses delta-based coordinates with combined RF + CSS zoom for accuracy. Segments adjacent to stubs (same-direction neighbors) are excluded from draggable segments to prevent diagonal artifacts.
+
+### 6. Segment Collapse
+When dragging a segment to align with an adjacent parallel segment, the perpendicular connector between them shrinks to zero length (< 8px) and is automatically hidden. This makes redundant segments dissolve naturally. The user can pull segments apart again by dragging either sub-segment's handle.
 
 ## Edge Reconnection
 

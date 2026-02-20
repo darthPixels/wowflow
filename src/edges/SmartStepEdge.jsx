@@ -125,9 +125,6 @@ export default function SmartStepEdge({
   ]);
 
   const rawWaypoints = rawResult.waypoints;
-  const routeSPos = rawResult.sPos;
-  const routeTPos = rawResult.tPos;
-
   // ── Part B: rawWaypoints + stored adjustments + active drag ──
   const waypoints = useMemo(() => {
     let pts = rawWaypoints.map((p) => [p[0], p[1]]);
@@ -146,10 +143,8 @@ export default function SmartStepEdge({
       pts = applySegmentOffset(pts, activeDrag.segIdx, activeDrag.offset);
     }
 
-    // Smart orthogonalize: uses handle positions to insert correct corners
-    // after segment adjustments (preserves stub entry/exit directions)
-    return orthogonalize(pts, routeSPos, routeTPos);
-  }, [rawWaypoints, routeSPos, routeTPos, data?.segmentAdjustments, activeDrag]);
+    return pts;
+  }, [rawWaypoints, data?.segmentAdjustments, activeDrag]);
 
   // ── Path + label position + swap button position ──
   const { path, labelPos, swapPos } = useMemo(() => {
@@ -189,19 +184,29 @@ export default function SmartStepEdge({
   // ── Draggable segments (always computed for hit areas) ──
   const draggableSegments = useMemo(() => {
     const segs = [];
+    const getDir = (ax, ay, bx, by) => {
+      if (Math.abs(ay - by) < 1) return 'h';
+      if (Math.abs(ax - bx) < 1) return 'v';
+      return null;
+    };
     for (let i = 1; i < waypoints.length - 2; i++) {
       const [x1, y1] = waypoints[i];
       const [x2, y2] = waypoints[i + 1];
-      const isHoriz = Math.abs(y1 - y2) < 1;
-      const isVert = Math.abs(x1 - x2) < 1;
-      if (!isHoriz && !isVert) continue;
-      const segLen = isHoriz ? Math.abs(x2 - x1) : Math.abs(y2 - y1);
+      const dir = getDir(x1, y1, x2, y2);
+      if (!dir) continue;
+      const segLen = dir === 'h' ? Math.abs(x2 - x1) : Math.abs(y2 - y1);
       if (segLen < 8) continue;
+      // Skip segments whose previous or next neighbor has the same direction —
+      // dragging these would create diagonals (since applySegmentOffset only moves
+      // the shared endpoint in one axis, leaving the other axis unchanged).
+      const prevDir = i >= 1 ? getDir(waypoints[i - 1][0], waypoints[i - 1][1], x1, y1) : null;
+      const nextDir = i + 2 < waypoints.length ? getDir(x2, y2, waypoints[i + 2][0], waypoints[i + 2][1]) : null;
+      if (prevDir === dir || nextDir === dir) continue;
       segs.push({
         segIdx: i, x1, y1, x2, y2,
         midX: (x1 + x2) / 2,
         midY: (y1 + y2) / 2,
-        direction: isHoriz ? 'horizontal' : 'vertical',
+        direction: dir === 'h' ? 'horizontal' : 'vertical',
       });
     }
     return segs;
@@ -218,11 +223,10 @@ export default function SmartStepEdge({
       const rfZoom = getViewport().zoom || 1;
       const cssZoom = parseFloat(document.documentElement.style.zoom) || 1;
       const totalZoom = rfZoom * cssZoom;
-      if (direction === 'horizontal') {
-        setActiveDrag({ segIdx, offset: (moveEvt.clientY - startY) / totalZoom });
-      } else {
-        setActiveDrag({ segIdx, offset: (moveEvt.clientX - startX) / totalZoom });
-      }
+      const offset = direction === 'horizontal'
+        ? (moveEvt.clientY - startY) / totalZoom
+        : (moveEvt.clientX - startX) / totalZoom;
+      setActiveDrag({ segIdx, offset });
     };
 
     const onPointerUp = (upEvt) => {
@@ -814,12 +818,24 @@ function computeBasicStepPath(sx, sy, tx, ty, sPos, tPos) {
   }
   if (sPos === 'right' && tPos === 'top') {
     if (tx >= sx) return [[sx, sy], [tx, sy], [tx, ty]];
+    if (ty > sy + 10) {
+      // Target is below — go right then down, approach target from above
+      const exitX = sx + 40;
+      const approachY = ty - 60;
+      return [[sx, sy], [exitX, sy], [exitX, approachY], [tx, approachY], [tx, ty]];
+    }
     const exitX = sx + 40;
     const detourY = Math.min(sy, ty) - 120;
     return [[sx, sy], [exitX, sy], [exitX, detourY], [tx, detourY], [tx, ty]];
   }
   if (sPos === 'left' && tPos === 'top') {
     if (tx <= sx) return [[sx, sy], [tx, sy], [tx, ty]];
+    if (ty > sy + 10) {
+      // Target is below — go left then down, approach target from above
+      const exitX = sx - 40;
+      const approachY = ty - 60;
+      return [[sx, sy], [exitX, sy], [exitX, approachY], [tx, approachY], [tx, ty]];
+    }
     const exitX = sx - 40;
     const detourY = Math.min(sy, ty) - 120;
     return [[sx, sy], [exitX, sy], [exitX, detourY], [tx, detourY], [tx, ty]];
