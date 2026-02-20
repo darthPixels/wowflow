@@ -139,15 +139,39 @@ export default function SmartStepEdge({
     return orthogonalize(pts, routeSPos, routeTPos);
   }, [rawWaypoints, routeSPos, routeTPos, data?.segmentAdjustments, activeDrag]);
 
-  // ── Path + label position ──
-  const { path, labelPos } = useMemo(() => {
+  // ── Path + label position + swap button position ──
+  const { path, labelPos, swapPos } = useMemo(() => {
     const d = waypointsToPath(waypoints);
     const mid = Math.floor(waypoints.length / 2);
+    // Label: midpoint of the middle segment (along the line)
     const lp = {
       x: (waypoints[Math.max(0, mid - 1)][0] + waypoints[mid][0]) / 2,
       y: (waypoints[Math.max(0, mid - 1)][1] + waypoints[mid][1]) / 2,
     };
-    return { path: d, labelPos: lp };
+    // Swap button: at the nearest bend/corner to path center (avoids segment midpoints)
+    let sp = lp;
+    const bends = [];
+    for (let i = 1; i < waypoints.length - 1; i++) {
+      const [px, py] = waypoints[i - 1];
+      const [cx, cy] = waypoints[i];
+      const [nx, ny] = waypoints[i + 1];
+      const seg1Horiz = Math.abs(py - cy) < 1;
+      const seg2Horiz = Math.abs(cy - ny) < 1;
+      if (seg1Horiz !== seg2Horiz) {
+        bends.push({ x: cx, y: cy });
+      }
+    }
+    if (bends.length > 0) {
+      const cx = (waypoints[0][0] + waypoints[waypoints.length - 1][0]) / 2;
+      const cy = (waypoints[0][1] + waypoints[waypoints.length - 1][1]) / 2;
+      let best = bends[0], bestDist = Infinity;
+      for (const b of bends) {
+        const dist = Math.hypot(b.x - cx, b.y - cy);
+        if (dist < bestDist) { bestDist = dist; best = b; }
+      }
+      sp = best;
+    }
+    return { path: d, labelPos: lp, swapPos: sp };
   }, [waypoints]);
 
   // ── Draggable segments (always computed for hit areas) ──
@@ -525,7 +549,7 @@ export default function SmartStepEdge({
             className="nodrag nopan wf-swap-btn"
             style={{
               position: 'absolute',
-              transform: `translate(-50%, -50%) translate(${labelPos.x}px, ${labelPos.y + (label ? 16 : 0)}px)`,
+              transform: `translate(-50%, -50%) translate(${swapPos.x}px, ${swapPos.y}px)`,
               cursor: 'pointer',
               pointerEvents: 'all',
               background: 'var(--bg-node)',
