@@ -8,14 +8,17 @@
 
 Two modes controlled by `edge.data.manualHandles`:
 
-- **Auto mode** (default): `computeAutoHandles` picks the best connector pair (top/bottom/left/right) based on relative node positions. Applies a zone-header penalty to avoid routing through swimlane headers.
+- **Auto mode** (default): `computeAutoHandles` picks the best connector pair (top/bottom/left/right) based on relative node positions. Applies a zone-header penalty to avoid routing through swimlane headers when the source is beside the zone (not above it — top entry is natural when source is directly above).
 - **Manual mode** (`manualHandles: true`): Uses React Flow's provided positions (`sourceX/Y/Position`, `targetX/Y/Position`) which respect the stored `sourceHandle`/`targetHandle` values. Set automatically when an edge is reconnected via drag.
 
-### 2. Stub Enforcement (`enforceStubs`)
-Always inserts 30px orthogonal stubs at entry and exit points to guarantee clean 90-degree connections regardless of node positions.
+### 2. Basic Path Computation (`computeBasicStepPath`)
+Generates an orthogonal step path based on handle positions (sPos/tPos). Handles 16 direction combinations with smart routing — e.g., `bottom→left` routes the vertical segment to the left of the target node (40px past the handle) to avoid crossing through the node body.
 
 ### 3. Obstacle Avoidance
-After computing the base orthogonal path, each segment is checked for intersection with node bounding boxes (padded by 36px). When an intersection is found, detour waypoints are inserted to route around the obstacle node.
+Each segment is checked for intersection with node bounding boxes (padded by 36px) and zone headers. When an intersection is found, detour waypoints are inserted to route around the obstacle. Zone headers of zones containing the source or target node are excluded from obstacles (edges need to cross them to reach connected nodes).
+
+### 4. Stub Enforcement (`enforceStubs`)
+Inserts 30px orthogonal stubs at entry and exit points. Stubs at indices 1 and length-2 are protected from `cleanWaypoints` removal, guaranteeing visible 30px straight segments at each handle.
 
 ### 4. Segment Dragging
 Mid-segments can be dragged perpendicular to their direction. Adjustments are stored in `edge.data.segmentAdjustments` and reapplied on each render. Uses delta-based coordinates with combined RF + CSS zoom for accuracy.
@@ -46,4 +49,4 @@ During reconnect drag, when the cursor moves within 60px of the React Flow conta
 
 ## Swap Direction
 
-Selected edges show a swap button (arrow icon) at the midpoint. Clicking it swaps `source`/`target` and `sourceHandle`/`targetHandle`, and clears `segmentAdjustments`.
+Selected edges show a swap button (arrow icon) at the nearest bend/corner to the path center. Clicking it swaps `source`/`target` and `sourceHandle`/`targetHandle`, and clears `segmentAdjustments`.

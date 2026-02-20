@@ -86,6 +86,18 @@ export default function SmartStepEdge({
 
     const zoneHeaderBoxes = allNodes
       .filter((n) => n.type === 'groupNode')
+      .filter((zoneNode) => {
+        // Allow edges to cross headers of zones containing their source or target
+        const zp = getAbsPos(zoneNode.id, zoneNode.position);
+        const zw = zoneNode.style?.width || zoneNode.measured?.width || 400;
+        const zh = zoneNode.style?.height || zoneNode.measured?.height || 300;
+        const isInside = (nd) => {
+          if (!nd) return false;
+          const p = getAbsPos(nd.id, nd.position);
+          return p.x >= zp.x && p.x < zp.x + zw && p.y >= zp.y && p.y < zp.y + zh;
+        };
+        return !isInside(srcNode) && !isInside(tgtNode);
+      })
       .map((n) => {
         const pos = getAbsPos(n.id, n.position);
         const w = n.style?.width || n.measured?.width || 400;
@@ -628,8 +640,9 @@ function computeAutoHandles(srcNode, tgtNode, allNodes, getAbsPos) {
     { x: tgt.absPos.x + tgt.w,     y: tgt.absPos.y + (tgt.h + tgt.labelOff) / 2, pos: 'right',  score: -dx },
   ];
 
-  // Zone header penalty: when target is geometrically inside a zone and source is not,
-  // penalize "top" target handle (would cross zone header) and prefer side entry
+  // Zone header penalty: when target is inside a zone and source is beside the zone,
+  // penalize "top" target handle (would cross zone header) and prefer side entry.
+  // Skip penalty when source is above the zone — top entry is natural in that case.
   const tgtAbsPos = tgt.absPos;
   const srcAbsPos = src.absPos;
   const zones = allNodes.filter((n) => n.type === 'groupNode');
@@ -637,18 +650,18 @@ function computeAutoHandles(srcNode, tgtNode, allNodes, getAbsPos) {
     const zonePos = getAbsPos(zone.id, zone.position);
     const zoneW = zone.style?.width || zone.measured?.width || 400;
     const zoneH = zone.style?.height || zone.measured?.height || 300;
-    // Check if target is inside this zone
     const tgtInZone =
       tgtAbsPos.x >= zonePos.x && tgtAbsPos.x < zonePos.x + zoneW &&
       tgtAbsPos.y >= zonePos.y && tgtAbsPos.y < zonePos.y + zoneH;
-    // Check if source is NOT inside this zone
     const srcInZone =
       srcAbsPos.x >= zonePos.x && srcAbsPos.x < zonePos.x + zoneW &&
       srcAbsPos.y >= zonePos.y && srcAbsPos.y < zonePos.y + zoneH;
     if (tgtInZone && !srcInZone) {
+      // If source is above the zone, top entry is natural — skip penalty
+      const srcBottom = srcAbsPos.y + src.h;
+      if (srcBottom < zonePos.y + ZONE_HEADER_H) break;
       const topH = tgtHandles.find((h) => h.pos === 'top');
       if (topH) topH.score -= 1000;
-      // Boost the side closest to source as preferred zone entry
       if (dx >= 0) {
         const leftH = tgtHandles.find((h) => h.pos === 'left');
         if (leftH) leftH.score += 200;
@@ -812,10 +825,16 @@ function computeBasicStepPath(sx, sy, tx, ty, sPos, tPos) {
     return [[sx, sy], [exitX, sy], [exitX, detourY], [tx, detourY], [tx, ty]];
   }
   if (sPos === 'bottom' && tPos === 'left') {
-    return [[sx, sy], [sx, ty], [tx, ty]];
+    const offX = tx - 40;
+    if (sx <= offX) return [[sx, sy], [sx, ty], [tx, ty]];
+    const midY = (sy + ty) / 2;
+    return [[sx, sy], [sx, midY], [offX, midY], [offX, ty], [tx, ty]];
   }
   if (sPos === 'bottom' && tPos === 'right') {
-    return [[sx, sy], [sx, ty], [tx, ty]];
+    const offX = tx + 40;
+    if (sx >= offX) return [[sx, sy], [sx, ty], [tx, ty]];
+    const midY = (sy + ty) / 2;
+    return [[sx, sy], [sx, midY], [offX, midY], [offX, ty], [tx, ty]];
   }
   if (sPos === 'top' && tPos === 'left') {
     const offY = Math.min(sy, ty) - 60;
@@ -922,10 +941,8 @@ function computeSmartPath(sx, sy, tx, ty, sPos, tPos, boxes) {
     if (!found) break;
   }
 
-  // Enforce stubs AFTER obstacle avoidance
+  // Enforce stubs, then orthogonalize + clean
   waypoints = enforceStubs(waypoints, sPos, tPos);
-
-  // Guarantee 90° + clean up redundant points
   waypoints = orthogonalize(waypoints);
   return cleanWaypoints(waypoints);
 }
@@ -936,6 +953,12 @@ function cleanWaypoints(pts) {
   if (pts.length <= 2) return pts;
   const result = [pts[0]];
   for (let i = 1; i < pts.length - 1; i++) {
+    // Preserve stub points (source stub at index 1, target stub at length-2)
+    // so they survive cleanup and guarantee visible 30px entry/exit segments
+    if (i === 1 || i === pts.length - 2) {
+      result.push(pts[i]);
+      continue;
+    }
     const prev = result[result.length - 1];
     const curr = pts[i];
     const next = pts[i + 1];
