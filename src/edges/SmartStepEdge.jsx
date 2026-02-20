@@ -50,8 +50,8 @@ export default function SmartStepEdge({
     return internal?.internals?.positionAbsolute || fallbackPos;
   }, [getInternalNode]);
 
-  // ── Part A: auto-computed waypoints ──
-  const rawWaypoints = useMemo(() => {
+  // ── Part A: auto-computed waypoints + handle positions ──
+  const rawResult = useMemo(() => {
     const srcNode = allNodes.find((n) => n.id === source);
     const tgtNode = allNodes.find((n) => n.id === target);
 
@@ -99,7 +99,11 @@ export default function SmartStepEdge({
 
     const boxes = [...nodeBoxes, ...zoneHeaderBoxes];
 
-    return computeSmartPath(sx, sy, tx, ty, sPos, tPos, boxes);
+    return {
+      waypoints: computeSmartPath(sx, sy, tx, ty, sPos, tPos, boxes),
+      sPos,
+      tPos,
+    };
   }, [
     source, target, rfSourceX, rfSourceY, rfTargetX, rfTargetY,
     rfSourcePos, rfTargetPos, getAbsPos, data?.manualHandles,
@@ -107,6 +111,10 @@ export default function SmartStepEdge({
       `${n.id}:${Math.round(n.position.x)}:${Math.round(n.position.y)}:${n.measured?.width || 0}:${n.measured?.height || 0}:${n.style?.width || 0}:${n.style?.height || 0}`
     ).join('|'),
   ]);
+
+  const rawWaypoints = rawResult.waypoints;
+  const routeSPos = rawResult.sPos;
+  const routeTPos = rawResult.tPos;
 
   // ── Part B: rawWaypoints + stored adjustments + active drag ──
   const waypoints = useMemo(() => {
@@ -126,9 +134,10 @@ export default function SmartStepEdge({
       pts = applySegmentOffset(pts, activeDrag.segIdx, activeDrag.offset);
     }
 
-    // Safety: guarantee orthogonal after any adjustments
-    return orthogonalize(pts);
-  }, [rawWaypoints, data?.segmentAdjustments, activeDrag]);
+    // Smart orthogonalize: uses handle positions to insert correct corners
+    // after segment adjustments (preserves stub entry/exit directions)
+    return orthogonalize(pts, routeSPos, routeTPos);
+  }, [rawWaypoints, routeSPos, routeTPos, data?.segmentAdjustments, activeDrag]);
 
   // ── Path + label position ──
   const { path, labelPos } = useMemo(() => {
@@ -151,7 +160,7 @@ export default function SmartStepEdge({
       const isVert = Math.abs(x1 - x2) < 1;
       if (!isHoriz && !isVert) continue;
       const segLen = isHoriz ? Math.abs(x2 - x1) : Math.abs(y2 - y1);
-      if (segLen < 20) continue;
+      if (segLen < 8) continue;
       segs.push({
         segIdx: i, x1, y1, x2, y2,
         midX: (x1 + x2) / 2,
@@ -332,12 +341,10 @@ export default function SmartStepEdge({
       const cursor = getCursorFlow(upEvt.clientX, upEvt.clientY);
       const snapAtRelease = findSnap(cursor.x, cursor.y);
       const snap = snapAtRelease || lastSnapRef.current;
-      console.log(`[reconnect] release: edgeId=${id} type=${type} snapped=${!!snap} snapNode=${snap?.nodeId} snapPos=${snap?.pos}`);
       if (snap) {
         const updates = type === 'source'
           ? { source: snap.nodeId, sourceHandle: snap.pos }
           : { target: snap.nodeId, targetHandle: snap.pos };
-        console.log(`[reconnect] RECONNECTING: edge=${id} ${type}=${snap.nodeId}:${snap.pos} (was ${type === 'source' ? source : target})`);
         reconnectEdgeTo(id, updates);
       }
       setReconnectDrag(null);
@@ -401,10 +408,10 @@ export default function SmartStepEdge({
           : { x: reconnectDrag.cursorX, y: reconnectDrag.cursorY };
         return (
           <>
-            {/* Debug: show all snap target positions as small dots */}
+            {/* Available snap targets — small dots at each handle */}
             {dragHandlesRef.current.map((h, i) => (
-              <circle key={`dbg-${i}`} cx={h.x} cy={h.y} r={4}
-                fill="rgba(255,80,80,0.5)" stroke="none" />
+              <circle key={`snap-target-${i}`} cx={h.x} cy={h.y} r={4}
+                fill="var(--accent-blue)" opacity={0.3} stroke="none" />
             ))}
             <line
               x1={fixedEnd.x} y1={fixedEnd.y}
@@ -413,11 +420,6 @@ export default function SmartStepEdge({
               strokeWidth={2}
               strokeDasharray="6 3"
               fill="none"
-            />
-            {/* Debug: green circle at raw cursor flow position (should follow your mouse exactly) */}
-            <circle
-              cx={reconnectDrag.cursorX} cy={reconnectDrag.cursorY}
-              r={6} fill="rgba(0,255,80,0.7)" stroke="white" strokeWidth={1}
             />
             <circle
               cx={dragEnd.x} cy={dragEnd.y}
@@ -498,7 +500,7 @@ export default function SmartStepEdge({
             {label}
           </div>
         )}
-        {(hovered || activeDrag) && draggableSegments.map((seg) => (
+        {(selected || hovered || activeDrag) && draggableSegments.map((seg) => (
           <div
             key={`seg-handle-${seg.segIdx}`}
             style={{
@@ -645,15 +647,35 @@ function computeAutoHandles(srcNode, tgtNode, allNodes, getAbsPos) {
 
 // ───── Guarantee all segments are orthogonal (90°) ─────
 
-function orthogonalize(pts) {
+function orthogonalize(pts, sPos, tPos) {
   if (pts.length < 2) return pts;
   const result = [pts[0]];
   for (let i = 1; i < pts.length; i++) {
     const prev = result[result.length - 1];
     const curr = pts[i];
     if (Math.abs(prev[0] - curr[0]) > 0.5 && Math.abs(prev[1] - curr[1]) > 0.5) {
-      // Non-orthogonal segment: insert a corner (go vertical first, then horizontal)
-      result.push([prev[0], curr[1]]);
+      // Non-orthogonal: need to insert a corner point.
+      // Two options: vertical-first [prev.x, curr.y] or horizontal-first [curr.x, prev.y]
+      // Smart mode (sPos/tPos provided): choose based on stub directions so that
+      // dragging segments preserves proper entry/exit angles.
+      let useHorizFirst = false;
+      if (sPos && tPos) {
+        const prevPrev = result.length >= 2 ? result[result.length - 2] : null;
+        if (!prevPrev) {
+          // First corner: preserve source handle exit direction
+          // Horizontal handles (left/right) exit horizontally → horizontal-first
+          useHorizFirst = (sPos === 'left' || sPos === 'right');
+        } else if (i === pts.length - 1) {
+          // Last corner: preserve target handle entry direction
+          // Vertical handles (top/bottom) enter vertically → horizontal-first
+          useHorizFirst = (tPos === 'top' || tPos === 'bottom');
+        } else {
+          // Middle corners: alternate based on previous segment direction
+          const prevIsVert = Math.abs(prevPrev[0] - prev[0]) < 0.5;
+          useHorizFirst = prevIsVert;
+        }
+      }
+      result.push(useHorizFirst ? [curr[0], prev[1]] : [prev[0], curr[1]]);
     }
     result.push(curr);
   }

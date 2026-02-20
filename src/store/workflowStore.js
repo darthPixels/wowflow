@@ -181,8 +181,6 @@ const useWorkflowStore = create((set, get) => ({
   },
 
   reconnectEdgeTo: (edgeId, updates) => {
-    const oldEdge = get().edges.find((e) => e.id === edgeId);
-    console.log(`[store] reconnectEdgeTo: edge=${edgeId} found=${!!oldEdge} old=${oldEdge?.source}->${oldEdge?.target} new=${updates.source ?? oldEdge?.source}->${updates.target ?? oldEdge?.target} handles=${updates.sourceHandle ?? oldEdge?.sourceHandle}->${updates.targetHandle ?? oldEdge?.targetHandle}`);
     set({
       edges: get().edges.map((e) =>
         e.id === edgeId
